@@ -10,6 +10,8 @@ import (
 
 var _ http.Handler = webHttp2Handler{}
 
+// webHttp2Handler serves static web content
+// and tries to use HTTP2 pushing to push index.css when index.html is requested
 type webHttp2Handler struct {
 	fileServer http.Handler
 }

@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"go-code-patterns/http2/pkg/respctrl"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"sync"
@@ -18,8 +20,8 @@ var _ http.Handler = fullDuplexHandler{}
 var _ error = (*httpErr)(nil)
 
 type fullDuplexHandler struct {
-	//supportHttp1 bool
-	//readFullBody bool
+	fullDuplexForHttp1 bool
+	flushResp          bool
 }
 
 type httpErr struct {
@@ -27,9 +29,14 @@ type httpErr struct {
 	err    error
 }
 
-func NewFullDuplexHandler(supportHttp1 bool) http.Handler {
+type loggedReader struct {
+	r io.Reader
+}
+
+func NewFullDuplexHandler(flushResp, fullDuplexForHttp1 bool) http.Handler {
 	return fullDuplexHandler{
-		//supportHttp1: supportHttp1,
+		flushResp:          flushResp,
+		fullDuplexForHttp1: fullDuplexForHttp1,
 	}
 }
 
@@ -38,28 +45,15 @@ func (f fullDuplexHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	numsCh := make(chan int, 1)
+	numsCh := make(chan int)
 	errCh := make(chan error, 1)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := readBody(ctx, r, numsCh); err != nil {
-			select {
-			case errCh <- err:
-			default:
-				slog.Error("error while reading body", slog.Any("err", err))
-			}
-		}
-		cancel()
-	}()
-
-	const numWorkers = 2
+	const numWorkers = 3
 	wg.Add(numWorkers)
 	for range numWorkers {
 		go func() {
 			defer wg.Done()
-			if err := sendResponse(ctx, w, numsCh); err != nil {
+			if err := f.sendResponse(ctx, w, numsCh); err != nil {
 				select {
 				case errCh <- err:
 				default:
@@ -68,6 +62,43 @@ func (f fullDuplexHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			cancel()
 		}()
+	}
+
+	readBodyConcurently := true
+	if r.ProtoMajor == 1 {
+		if f.fullDuplexForHttp1 {
+			rc := respctrl.NewImprovedResponseController(w)
+			if err := rc.EnableFullDuplex(); err != nil {
+				readBodyConcurently = false
+				slog.Warn("error while enabling full duplex", slog.Any("err", err))
+			}
+		} else {
+			readBodyConcurently = false
+		}
+	}
+
+	if readBodyConcurently {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := readBody(ctx, r, numsCh, false); err != nil {
+				select {
+				case errCh <- err:
+				default:
+					slog.Error("error while reading body concurrently", slog.Any("err", err))
+				}
+			}
+			cancel()
+		}()
+	} else {
+		if err := readBody(ctx, r, numsCh, true); err != nil {
+			select {
+			case errCh <- err:
+			default:
+				slog.Error("error while reading body", slog.Any("err", err))
+			}
+		}
+		cancel()
 	}
 
 	wg.Wait()
@@ -83,22 +114,19 @@ func (f fullDuplexHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *httpErr) Error() string {
-	return fmt.Sprintf("%d %s", h.status, h.err)
-}
-
-func sendResponse(ctx context.Context, w http.ResponseWriter, numsCh chan int) error {
+func (f fullDuplexHandler) sendResponse(ctx context.Context, w http.ResponseWriter, numsCh chan int) error {
 	rc := respctrl.NewImprovedResponseController(w)
-	flushSupported := true
+	flushSupported := f.flushResp
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case num := <-numsCh:
 			// simulate some work
-			time.Sleep(time.Second)
+			mill := rand.IntN(3000) + 1000
+			time.Sleep(time.Duration(mill) * time.Millisecond)
 
-			fmt.Fprintf(w, "%d*2=%d\n", num, num*num)
+			fmt.Fprintf(w, "%d^2=%d\n", num, num*num)
 
 			if flushSupported {
 				if err := rc.Flush(); err != nil {
@@ -117,8 +145,16 @@ func sendResponse(ctx context.Context, w http.ResponseWriter, numsCh chan int) e
 	}
 }
 
-func readBody(ctx context.Context, r *http.Request, numsCh chan int) error {
-	bufReader := bufio.NewReader(r.Body)
+func readBody(ctx context.Context, r *http.Request, numsCh chan int, readAll bool) error {
+	var reader io.Reader = loggedReader{r: r.Body}
+	if readAll {
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return fmt.Errorf("unable to read the whole body: %w", err)
+		}
+		reader = bytes.NewBuffer(body)
+	}
+	bufReader := bufio.NewReaderSize(reader, 16)
 	for {
 		select {
 		case <-ctx.Done():
@@ -136,7 +172,7 @@ func readBody(ctx context.Context, r *http.Request, numsCh chan int) error {
 			}
 
 			// simulate some work
-			time.Sleep(time.Second)
+			//time.Sleep(time.Second)
 
 			num, err := strconv.Atoi(strNum[:len(strNum)-1])
 			if err != nil {
@@ -146,7 +182,7 @@ func readBody(ctx context.Context, r *http.Request, numsCh chan int) error {
 				}
 			}
 			// prevent goroutine leak
-			timer := time.NewTimer(5 * time.Second)
+			timer := time.NewTimer(15 * time.Second)
 			select {
 			case numsCh <- num:
 			case <-timer.C:
@@ -154,4 +190,14 @@ func readBody(ctx context.Context, r *http.Request, numsCh chan int) error {
 			}
 		}
 	}
+}
+
+func (h *httpErr) Error() string {
+	return fmt.Sprintf("%d %s", h.status, h.err)
+}
+
+func (l loggedReader) Read(p []byte) (int, error) {
+	n, err := l.r.Read(p)
+	slog.Info("Read body to buf", slog.Int("bytes", n))
+	return n, err
 }

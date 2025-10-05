@@ -7,6 +7,7 @@ import (
 	"reflect"
 )
 
+// Middleware returns middleware handler that performs logging and sets additional headers
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proto := r.Proto

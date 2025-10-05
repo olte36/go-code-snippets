@@ -26,10 +26,14 @@ func main() {
 
 	var port int
 	var isHttp1 bool
+	var http1FullDuplex bool
+	var flushResp bool
 	var certPath string
 	var keyPath string
 	flag.IntVar(&port, "port", 8080, "")
 	flag.BoolVar(&isHttp1, "http1", false, "")
+	flag.BoolVar(&http1FullDuplex, "http1-full-duplex", false, "")
+	flag.BoolVar(&flushResp, "flush", true, "")
 	flag.StringVar(&certPath, "cert", "configs/cert.pem", "")
 	flag.StringVar(&keyPath, "key", "configs/key.pem", "")
 	flag.Parse()
@@ -37,7 +41,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /", handlers.Middleware(handlers.NewWebHttp2Handler(web.Assets)))
-	mux.Handle("POST /api/full-duplex", handlers.Middleware(handlers.NewFullDuplexHandler(false)))
+	mux.Handle("POST /api/full-duplex", handlers.Middleware(handlers.NewFullDuplexHandler(flushResp, http1FullDuplex)))
 
 	tlsCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {

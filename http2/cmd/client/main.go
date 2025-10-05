@@ -6,13 +6,18 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os/signal"
+	"strconv"
 	"syscall"
 )
+
+const delim = '\n'
 
 func main() {
 	if err := run(); err != nil {
@@ -24,9 +29,18 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	//reqCtx, reqCtxCancel := context.WithTimeout(ctx, 2*time.Second)
-	//defer reqCtxCancel()
+	var serverAddr string
+	flag.StringVar(&serverAddr, "addr", "https://localhost:8080", "")
+	flag.Parse()
 
+	// prepate endpoint
+	serverUrl, err := url.Parse(serverAddr)
+	if err != nil {
+		return fmt.Errorf("invalid server address %s: %w", serverAddr, err)
+	}
+	serverUrl.Path = "/api/full-duplex"
+
+	// use HTTP2 by default, skip certificate checking
 	tr := &http.Transport{
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		ForceAttemptHTTP2: true,
@@ -35,10 +49,15 @@ func run() error {
 		Transport: tr,
 	}
 
-	endpoint := "https://localhost:8080/api/full-duplex"
+	// prepare request body
+	var buffer bytes.Buffer
+	for num := range 16 {
+		buffer.WriteString(strconv.Itoa(num))
+		buffer.WriteRune(delim)
+	}
 
-	buffer := bytes.NewBufferString("2\n3\n4\n5\n")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, buffer)
+	// preapre and send request
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverUrl.String(), &buffer)
 	if err != nil {
 		return fmt.Errorf("unable to create request: %w", err)
 	}
@@ -46,15 +65,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("unable to request: %s", err)
 	}
-	log.Println("sent request")
 
+	// read response body
 	bufReader := bufio.NewReader(res.Body)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
-			res, err := bufReader.ReadString('\n')
+			res, err := bufReader.ReadString(delim)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					return nil

@@ -2,24 +2,31 @@ package patterns
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
 )
 
-func Retry(fn TargetFunc, maxRetries int, delay time.Duration) TargetFunc {
-	return func(ctx context.Context) error {
-		for i := 0; ; i++ {
-			if err := fn(ctx); err == nil || i >= maxRetries {
-				return err
-			}
+func Retry(fn func() error, maxRetries int, delay time.Duration) (int, error) {
+	for i := range maxRetries {
+		if err := fn(); err == nil {
+			return i + 1, nil
+		}
+		<-time.After(delay)
+	}
+	return maxRetries, fmt.Errorf("max retries reached")
+}
 
-			log.Printf("Attempt number %d failed, retrying in %v", i+1, delay)
-
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+func RetryContext(ctx context.Context, fn func() error, maxRetries int, delay time.Duration) (int, error) {
+	for i := range maxRetries {
+		if err := fn(); err == nil {
+			return i + 1, nil
+		}
+		select {
+		case <-ctx.Done():
+			return i + 1, ctx.Err()
+		case <-time.After(delay):
+			// continue
 		}
 	}
+	return maxRetries, fmt.Errorf("max retries reached")
 }

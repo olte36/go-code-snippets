@@ -38,6 +38,15 @@ func (r RevocationStatus) String() string {
 	}
 }
 
+// This simple program demonstrates how to check the revocation status of a TLS certificate
+// using: CRL, OCSP, and OCSP Stampling. It connects to a specified server, retrieves the
+// certificate, and checks its revocation status.
+// The default Go TLS client does not perform revocation checks, so this example implements them manually.
+//
+// Usage: go run main.go <url>
+//
+// There is a site with valid, expired, and revoked certificates for testing purposes:
+// https://www.ssl.com/sample-valid-revoked-and-expired-ssl-tls-certificates/
 func main() {
 	address := os.Args[1]
 

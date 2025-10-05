@@ -1,1 +1,2 @@
-# Go-Code-Patterns
+# Go-Code-Snippets
+

@@ -1,10 +1,5 @@
 package algorithms
 
-type TreeNode struct {
-	Val    string
-	Leaves []*TreeNode
-}
-
 func BreadthFirstTravese(root *TreeNode, fn func(*TreeNode) bool) {
 	queue := []*TreeNode{root}
 	for len(queue) > 0 {
